@@ -36,15 +36,21 @@ if (!PROXY_HEADER) {
   process.exit(1);
 }
 
-app.set('trust proxy', 1);
+app.set('trust proxy', 1 /* number of proxies between user and server */);
 
+// IMPORTANT: Vertex AI Studio Rate Limiting
 const proxyLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message: 'You have exceeded the request limit, please try again later.' },
+    windowMs: 15 * 60 * 1000, // Set ratelimit window at 15min (in ms)
+    max: 100, // Limit each IP to 100 requests per window 
+    standardHeaders: true, // Return rate limit info in the "RateLimit-*" headers
+    legacyHeaders: false, // no "X-RateLimit-*" headers
+    message: {
+      error: 'Too many requests',
+      message: 'You have exceed the request limit, please try again later.'
+    },
 });
+
+// Apply the rate limiter to the /api-proxy route before the main proxy logic
 app.use('/api-proxy', proxyLimiter);
 
 const firestore = new Firestore({ projectId: GOOGLE_CLOUD_PROJECT });
@@ -485,8 +491,7 @@ server.on('upgrade', async (request, socket, head) => {
 
 // The "catchall" handler: for any request that doesn't
 // match one above, send back React's index.html file.
-app.get(/.*/, (req, res) => {
+app.use((req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
 });
-
 

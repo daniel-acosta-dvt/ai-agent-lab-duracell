@@ -11,12 +11,18 @@ import { GoogleAuth } from 'google-auth-library';
 import fetch from 'node-fetch';
 import rateLimit from 'express-rate-limit';
 import { WebSocketServer, WebSocket } from 'ws';
+import { Firestore } from '@google-cloud/firestore';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json({limit: process?.env?.API_PAYLOAD_MAX_SIZE || "7mb"}));
 
-const PORT = process?.env?.API_BACKEND_PORT || 5000;
-const API_BACKEND_HOST = process?.env?.API_BACKEND_HOST || "127.0.0.1";
+const PORT = process?.env?.PORT || process?.env?.API_BACKEND_PORT || 5000;
+const API_BACKEND_HOST = process?.env?.API_BACKEND_HOST || "0.0.0.0";
 
 const GOOGLE_CLOUD_LOCATION = process?.env?.GOOGLE_CLOUD_LOCATION;
 const GOOGLE_CLOUD_PROJECT = process?.env?.GOOGLE_CLOUD_PROJECT;
@@ -30,23 +36,47 @@ if (!PROXY_HEADER) {
   process.exit(1);
 }
 
-app.set('trust proxy', 1 /* number of proxies between user and server */);
+app.set('trust proxy', 1);
 
-// IMPORTANT: Vertex AI Studio Rate Limiting
-// This rate limiting configuration protects your backend APIs from abuse.
-// Removing it exposes your service to DoS attacks and unexpected costs.
 const proxyLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // Set ratelimit window at 15min (in ms)
-    max: 100, // Limit each IP to 100 requests per window 
-    standardHeaders: true, // Return rate limit info in the "RateLimit-*" headers
-    legacyHeaders: false, // no "X-RateLimit-*" headers
-    message: {
-      error: 'Too many requests',
-      message: 'You have exceed the request limit, please try again later.'
-    },
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'You have exceeded the request limit, please try again later.' },
 });
-// Apply the rate limiter to the /api-proxy route before the main proxy logic
 app.use('/api-proxy', proxyLimiter);
+
+const firestore = new Firestore({ projectId: GOOGLE_CLOUD_PROJECT });
+const SUBMISSIONS_COLLECTION = 'priceChangeRequests';
+
+app.post('/api/submissions', async (req, res) => {
+  try {
+    const { client, records } = req.body || {};
+    if (!client || !Array.isArray(records) || records.length === 0) {
+      return res.status(400).json({ error: 'client and a non-empty records array are required' });
+    }
+    const doc = {
+      client: {
+        name: client.name || '',
+        email: client.email || '',
+        company: client.company || '',
+        companyCode: client.companyCode || '',
+      },
+      records,
+      submittedAt: Firestore.Timestamp.now(),
+    };
+    const ref = await firestore.collection(SUBMISSIONS_COLLECTION).add(doc);
+    console.log(`[Firestore] wrote submission ${ref.id} for ${doc.client.email}`);
+    res.json({ id: ref.id });
+  } catch (err) {
+    console.error('[Firestore] write failed:', err);
+    res.status(500).json({ error: err?.message || 'Firestore write failed' });
+  }
+});
+
+// Serve static files from the React app
+app.use(express.static(path.join(__dirname, '../frontend/dist')));
 
 const API_CLIENT_MAP = [
  {
@@ -451,6 +481,12 @@ server.on('upgrade', async (request, socket, head) => {
     // Path did not match
     socket.destroy();
   }
+});
+
+// The "catchall" handler: for any request that doesn't
+// match one above, send back React's index.html file.
+app.get(/.*/, (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
 });
 
 

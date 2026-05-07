@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => {
         proxy: {
           //Target your Node.js backend
           '/api-proxy': 'http://localhost:5000',
+          '/api/submissions': 'http://localhost:5000',
           '/ws-proxy': {target: 'ws://localhost:5000', ws: true},
         },
       },

@@ -1,5 +1,18 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { ExtractedPriceUpdate, MissingField } from '../types';
+import { ExtractedPriceUpdate, MissingField, ProcessedRecord } from '../types';
+
+export const EDITABLE_FIELDS = [
+  'saOaRecord', 'vendorName', 'vendorCode', 'saLine', 'brandCode',
+  'brandDescription', 'previousPrice', 'newPrice', 'validityStartDate',
+  'validityEndDate', 'currency', 'per', 'uom', 'buyerCode', 'comments'
+] as const;
+export type EditableField = typeof EDITABLE_FIELDS[number];
+
+export interface RecordEdit {
+  recordId: string;
+  fieldName: EditableField;
+  value: string;
+}
 
 // Initialize the SDK. It expects process.env.API_KEY to be available in the environment.
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY, vertexai: true });
@@ -113,5 +126,100 @@ export const parseUserCorrection = async (
   } catch (error) {
     console.error("Error parsing user correction with Gemini:", error);
     throw new Error("Failed to parse user response.");
+  }
+};
+
+export const parseRecordEdits = async (
+  userMessage: string,
+  records: ProcessedRecord[]
+): Promise<RecordEdit[]> => {
+  const summary = records.map((r, i) => ({
+    rowNumber: i + 1,
+    recordId: r.id,
+    material: r.shortText || r.brandDescription || '(unknown)',
+    brandCode: r.brandCode,
+    vendorName: r.vendorName,
+    currentValues: {
+      saOaRecord: r.saOaRecord,
+      vendorName: r.vendorName,
+      vendorCode: r.vendorCode,
+      saLine: r.saLine,
+      brandCode: r.brandCode,
+      brandDescription: r.brandDescription,
+      previousPrice: r.previousPrice,
+      newPrice: r.newPrice,
+      validityStartDate: r.validityStartDate,
+      validityEndDate: r.validityEndDate,
+      currency: r.currency,
+      per: r.per,
+      uom: r.uom,
+      buyerCode: r.buyerCode,
+      comments: r.comments,
+    }
+  }));
+
+  const prompt = `
+    You translate a user's natural-language edit request into structured updates
+    on a price-change request form. The form has one or more rows. Each row
+    represents a material with these editable fields:
+      saOaRecord, vendorName, vendorCode, saLine, brandCode, brandDescription,
+      previousPrice, newPrice, validityStartDate, validityEndDate, currency,
+      per, uom, buyerCode, comments.
+
+    Current rows (JSON):
+    ${JSON.stringify(summary, null, 2)}
+
+    User instruction:
+    """
+    ${userMessage}
+    """
+
+    Task: produce a JSON array of edits. Each edit must include:
+      - recordId: the exact "recordId" string from the row to modify.
+      - fieldName: exactly one of the editable field names listed above.
+      - value: the new value as a string (numbers as their decimal string form).
+
+    Rules:
+    - The user can refer to a row by row number ("row 2"), by material name
+      ("Material A"), or by brand/vendor. Resolve to the matching recordId.
+    - If the user wants to change multiple fields or multiple rows, return one
+      entry per (recordId, fieldName) pair.
+    - For dates, normalize to DD/MM/YYYY.
+    - For currencies, convert symbols to codes (€ -> EUR, $ -> USD, £ -> GBP).
+    - If the request is ambiguous or no row matches, return an empty array.
+    - DO NOT invent values the user did not provide.
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.ARRAY,
+          description: 'List of cell edits to apply to the records table',
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              recordId: { type: Type.STRING, description: 'recordId of the row to modify' },
+              fieldName: { type: Type.STRING, description: 'one of the editable field names' },
+              value: { type: Type.STRING, description: 'new value as a string' }
+            },
+            required: ['recordId', 'fieldName', 'value']
+          }
+        }
+      }
+    });
+
+    const jsonStr = response.text.trim();
+    if (!jsonStr) return [];
+    const raw = JSON.parse(jsonStr) as RecordEdit[];
+    const validIds = new Set(records.map(r => r.id));
+    const validFields = new Set<string>(EDITABLE_FIELDS);
+    return raw.filter(e => validIds.has(e.recordId) && validFields.has(e.fieldName));
+  } catch (error) {
+    console.error("Error parsing record edits with Gemini:", error);
+    throw new Error("Failed to parse edit instruction.");
   }
 };

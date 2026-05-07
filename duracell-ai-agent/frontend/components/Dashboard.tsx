@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Client, ProcessedRecord, ChatMessage, MissingField } from '../types';
 import { MASTER_DATA, USER_HISTORY, LOGO_URL } from '../constants';
-import { extractPricingData, parseUserCorrection } from '../services/geminiService';
-import { LogOut, FileText, Loader2, CheckCircle2, AlertTriangle, Send, Bot, Check, RefreshCw, Mail, XCircle } from 'lucide-react';
+import { extractPricingData, parseUserCorrection, parseRecordEdits } from '../services/geminiService';
+import { LogOut, FileText, Loader2, CheckCircle2, Send, Bot, Check, RefreshCw, Mail, XCircle } from 'lucide-react';
 
 interface DashboardProps {
   client: Client;
@@ -239,12 +239,59 @@ const Dashboard: React.FC<DashboardProps> = ({ client, onLogout }) => {
           promptForMissingField(nextField);
         } else {
           setAppState('review');
-          addMessage('system', 'Excellent! I have all the information. Please review the form on the right before submitting.');
+          addMessage('system', 'Excellent! I have all the information. Review the form on the right — you can edit any cell directly, or just tell me what to change (e.g. *"Change Material A price to 1200"*). Press **Submit Request** when ready.');
         }
       } catch (err) {
         console.error(err);
         addMessage('system', 'An error occurred while processing. Please try again.');
         setAppState('idle');
+      }
+    } else if (appState === 'review') {
+      setAppState('processing');
+      try {
+        const edits = await parseRecordEdits(userText, records);
+        if (edits.length === 0) {
+          addMessage('system', "I couldn't pin that down to a specific cell. Try something like *'Change the new price for Material A to 1200'* or *'Set the buyer code on row 1 to B001'*.");
+          setAppState('review');
+          return;
+        }
+
+        const updatedRecords = records.map(r => {
+          const rowEdits = edits.filter(e => e.recordId === r.id);
+          if (rowEdits.length === 0) return r;
+          const next = { ...r };
+          for (const edit of rowEdits) {
+            const value = edit.fieldName === 'newPrice' ? parseFloat(edit.value) : edit.value;
+            (next as any)[edit.fieldName] = value;
+          }
+          return next;
+        });
+        setRecords(updatedRecords);
+
+        setSessionHistory(prev => {
+          const next = { ...prev };
+          for (const edit of edits) {
+            const target = updatedRecords.find(r => r.id === edit.recordId);
+            if (!target) continue;
+            next[target.shortText] = {
+              ...next[target.shortText],
+              [edit.fieldName]: edit.fieldName === 'newPrice' ? parseFloat(edit.value) : edit.value,
+            };
+          }
+          return next;
+        });
+
+        const summary = edits.map(e => {
+          const r = updatedRecords.find(x => x.id === e.recordId);
+          const label = r?.shortText || 'row';
+          return `• **${label}** — ${e.fieldName}: **${e.value}**`;
+        }).join('\n');
+        addMessage('system', `Done. Applied ${edits.length} change${edits.length === 1 ? '' : 's'}:\n${summary}`);
+        setAppState('review');
+      } catch (err) {
+        console.error(err);
+        addMessage('system', "Sorry, I had trouble understanding that edit. Could you rephrase?");
+        setAppState('review');
       }
     } else if (appState === 'gathering_info' && currentMissingField) {
       setAppState('processing');
@@ -287,7 +334,7 @@ const Dashboard: React.FC<DashboardProps> = ({ client, onLogout }) => {
         } else {
           setCurrentMissingField(null);
           setAppState('review');
-          addMessage('system', 'Perfect! I have all the necessary information now. Please review the table. When you are ready, press "Submit Request".');
+          addMessage('system', 'Perfect! I have all the necessary information now. Review the table — you can edit any cell directly or tell me what to change. When ready, press **Submit Request**.');
         }
       } catch (err) {
         console.error(err);
@@ -312,9 +359,36 @@ const Dashboard: React.FC<DashboardProps> = ({ client, onLogout }) => {
     setRecords(records.map(r => r.id === id ? { ...r, [field]: value } : r));
   };
 
-  const handleSubmitRequest = () => {
-    setAppState('submitted');
-    addMessage('system', '✅ **Request submitted successfully.**');
+  const handleSubmitRequest = async () => {
+    const previousState = appState;
+    setAppState('processing');
+    try {
+      const res = await fetch('/api/submissions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client: {
+            name: client.name,
+            email: client.email,
+            company: client.company,
+            companyCode: client.companyCode,
+          },
+          records,
+        }),
+      });
+      if (!res.ok) {
+        const errBody = await res.text();
+        throw new Error(`Backend ${res.status}: ${errBody}`);
+      }
+      const { id } = await res.json();
+      addMessage('system', `✅ **Request submitted successfully.** Saved as \`${id}\`.`);
+      setAppState('submitted');
+    } catch (err) {
+      console.error('Submit failed:', err);
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      addMessage('system', `⚠️ Submit failed: ${msg}. Please try again.`);
+      setAppState(previousState);
+    }
   };
 
   const handleSendEmailCopy = () => {
@@ -397,6 +471,15 @@ const Dashboard: React.FC<DashboardProps> = ({ client, onLogout }) => {
     );
   }
 
+  const requiredFields: (keyof ProcessedRecord)[] = [
+    'vendorCode', 'brandCode', 'saOaRecord', 'saLine', 'brandDescription',
+    'previousPrice', 'validityStartDate', 'validityEndDate', 'uom', 'per', 'buyerCode'
+  ];
+  const pendingCount = records.reduce(
+    (sum, r) => sum + requiredFields.filter(f => !r[f]).length, 0
+  );
+  const canSubmit = records.length > 0 && pendingCount === 0 && appState !== 'processing';
+
   return (
     <div className="h-screen bg-duracell-lightGray flex flex-col font-sans overflow-hidden">
       <header className="bg-duracell-black shadow-md z-10 border-b-4 border-duracell-copper flex-shrink-0">
@@ -451,7 +534,7 @@ const Dashboard: React.FC<DashboardProps> = ({ client, onLogout }) => {
             <div className="relative flex items-end">
               <textarea
                 className="w-full bg-duracell-white border border-duracell-mediumGray rounded pl-3 pr-12 py-2 focus:ring-2 focus:ring-duracell-copper focus:border-duracell-copper resize-none text-[12px] max-h-32 min-h-[40px] text-duracell-black"
-                placeholder={appState === 'idle' ? "Paste the email here..." : "Type your response..."}
+                placeholder={appState === 'idle' ? "Paste the email here..." : appState === 'review' ? "Tell me what to change..." : "Type your response..."}
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
@@ -506,52 +589,55 @@ const Dashboard: React.FC<DashboardProps> = ({ client, onLogout }) => {
                   </thead>
                   <tbody className="bg-duracell-white">
                     {records.map((row) => {
-                      const isReview = appState === 'review';
-                      const inputClass = "w-full border border-duracell-mediumGray rounded px-1 py-1 text-[11px] text-center focus:border-duracell-copper focus:ring-1 focus:ring-duracell-copper";
+                      const baseInput = "w-full rounded px-1 py-1 text-[11px] text-center focus:border-duracell-copper focus:ring-1 focus:ring-duracell-copper bg-duracell-white";
+                      const cls = (value: string | number) =>
+                        `${baseInput} border ${value === '' || value === undefined || value === null ? 'border-duracell-warning bg-orange-50' : 'border-duracell-mediumGray'}`;
                       return (
                         <tr key={row.id} className="hover:bg-duracell-lightGray transition-colors">
                           <td className="px-2 py-2 border border-duracell-mediumGray min-w-[120px]">
-                            {isReview ? <input type="text" value={row.saOaRecord} onChange={(e) => handleRecordChange(row.id, 'saOaRecord', e.target.value)} className={inputClass} /> : !row.saOaRecord ? <span className="text-duracell-warning flex items-center justify-center text-[10px] font-bold"><AlertTriangle className="w-3 h-3 mr-1"/> Pending</span> : <div className="text-center text-[11px]">{row.saOaRecord}</div>}
-                          </td>
-                          <td className="px-2 py-2 border border-duracell-mediumGray text-center text-[11px] min-w-[120px]">{row.vendorName}</td>
-                          <td className="px-2 py-2 border border-duracell-mediumGray min-w-[100px]">
-                            {isReview ? <input type="text" value={row.vendorCode} onChange={(e) => handleRecordChange(row.id, 'vendorCode', e.target.value)} className={inputClass} /> : !row.vendorCode ? <span className="text-duracell-warning flex items-center justify-center text-[10px] font-bold"><AlertTriangle className="w-3 h-3 mr-1"/> Pending</span> : <div className="text-center text-[11px]">{row.vendorCode}</div>}
-                          </td>
-                          <td className="px-2 py-2 border border-duracell-mediumGray min-w-[80px]">
-                            {isReview ? <input type="text" value={row.saLine} onChange={(e) => handleRecordChange(row.id, 'saLine', e.target.value)} className={inputClass} /> : !row.saLine ? <span className="text-duracell-warning flex items-center justify-center text-[10px] font-bold"><AlertTriangle className="w-3 h-3 mr-1"/> Pending</span> : <div className="text-center text-[11px]">{row.saLine}</div>}
+                            <input type="text" value={row.saOaRecord} onChange={(e) => handleRecordChange(row.id, 'saOaRecord', e.target.value)} className={cls(row.saOaRecord)} placeholder="Pending" />
                           </td>
                           <td className="px-2 py-2 border border-duracell-mediumGray min-w-[120px]">
-                            {isReview ? <input type="text" value={row.brandCode} onChange={(e) => handleRecordChange(row.id, 'brandCode', e.target.value)} className={inputClass} /> : !row.brandCode ? <span className="text-duracell-warning flex items-center justify-center text-[10px] font-bold"><AlertTriangle className="w-3 h-3 mr-1"/> Pending</span> : <div className="text-center text-[11px] font-mono">{row.brandCode}</div>}
-                          </td>
-                          <td className="px-2 py-2 border border-duracell-mediumGray min-w-[150px]">
-                            {isReview ? <input type="text" value={row.brandDescription} onChange={(e) => handleRecordChange(row.id, 'brandDescription', e.target.value)} className={inputClass} /> : !row.brandDescription ? <span className="text-duracell-warning flex items-center justify-center text-[10px] font-bold"><AlertTriangle className="w-3 h-3 mr-1"/> Pending</span> : <div className="text-center text-[11px]">{row.brandDescription}</div>}
+                            <input type="text" value={row.vendorName} onChange={(e) => handleRecordChange(row.id, 'vendorName', e.target.value)} className={cls(row.vendorName)} placeholder="Pending" />
                           </td>
                           <td className="px-2 py-2 border border-duracell-mediumGray min-w-[100px]">
-                            {isReview ? <input type="text" value={row.previousPrice} onChange={(e) => handleRecordChange(row.id, 'previousPrice', e.target.value)} className={inputClass} /> : !row.previousPrice ? <span className="text-duracell-warning flex items-center justify-center text-[10px] font-bold"><AlertTriangle className="w-3 h-3 mr-1"/> Pending</span> : <div className="text-center text-[11px]">{row.previousPrice}</div>}
+                            <input type="text" value={row.vendorCode} onChange={(e) => handleRecordChange(row.id, 'vendorCode', e.target.value)} className={cls(row.vendorCode)} placeholder="Pending" />
                           </td>
                           <td className="px-2 py-2 border border-duracell-mediumGray min-w-[80px]">
-                            {isReview ? <input type="number" value={row.newPrice} onChange={(e) => handleRecordChange(row.id, 'newPrice', parseFloat(e.target.value))} className={inputClass} /> : <div className="text-center text-[11px] font-bold text-duracell-success">{row.newPrice}</div>}
+                            <input type="text" value={row.saLine} onChange={(e) => handleRecordChange(row.id, 'saLine', e.target.value)} className={cls(row.saLine)} placeholder="Pending" />
+                          </td>
+                          <td className="px-2 py-2 border border-duracell-mediumGray min-w-[120px]">
+                            <input type="text" value={row.brandCode} onChange={(e) => handleRecordChange(row.id, 'brandCode', e.target.value)} className={`${cls(row.brandCode)} font-mono`} placeholder="Pending" />
+                          </td>
+                          <td className="px-2 py-2 border border-duracell-mediumGray min-w-[150px]">
+                            <input type="text" value={row.brandDescription} onChange={(e) => handleRecordChange(row.id, 'brandDescription', e.target.value)} className={cls(row.brandDescription)} placeholder="Pending" />
                           </td>
                           <td className="px-2 py-2 border border-duracell-mediumGray min-w-[100px]">
-                            {isReview ? <input type="text" value={row.validityStartDate} onChange={(e) => handleRecordChange(row.id, 'validityStartDate', e.target.value)} className={inputClass} placeholder="DD/MM/YYYY" /> : !row.validityStartDate ? <span className="text-duracell-warning flex items-center justify-center text-[10px] font-bold"><AlertTriangle className="w-3 h-3 mr-1"/> Pending</span> : <div className="text-center text-[11px]">{row.validityStartDate}</div>}
+                            <input type="text" value={row.previousPrice} onChange={(e) => handleRecordChange(row.id, 'previousPrice', e.target.value)} className={cls(row.previousPrice)} placeholder="Pending" />
+                          </td>
+                          <td className="px-2 py-2 border border-duracell-mediumGray min-w-[80px]">
+                            <input type="number" value={row.newPrice} onChange={(e) => handleRecordChange(row.id, 'newPrice', parseFloat(e.target.value))} className={`${cls(row.newPrice)} font-bold text-duracell-success`} />
                           </td>
                           <td className="px-2 py-2 border border-duracell-mediumGray min-w-[100px]">
-                            {isReview ? <input type="text" value={row.validityEndDate} onChange={(e) => handleRecordChange(row.id, 'validityEndDate', e.target.value)} className={inputClass} placeholder="DD/MM/YYYY" /> : !row.validityEndDate ? <span className="text-duracell-warning flex items-center justify-center text-[10px] font-bold"><AlertTriangle className="w-3 h-3 mr-1"/> Pending</span> : <div className="text-center text-[11px]">{row.validityEndDate}</div>}
+                            <input type="text" value={row.validityStartDate} onChange={(e) => handleRecordChange(row.id, 'validityStartDate', e.target.value)} className={cls(row.validityStartDate)} placeholder="DD/MM/YYYY" />
+                          </td>
+                          <td className="px-2 py-2 border border-duracell-mediumGray min-w-[100px]">
+                            <input type="text" value={row.validityEndDate} onChange={(e) => handleRecordChange(row.id, 'validityEndDate', e.target.value)} className={cls(row.validityEndDate)} placeholder="DD/MM/YYYY" />
                           </td>
                           <td className="px-2 py-2 border border-duracell-mediumGray min-w-[70px]">
-                            {isReview ? <input type="text" value={row.currency} onChange={(e) => handleRecordChange(row.id, 'currency', e.target.value)} className={inputClass} /> : <div className="text-center text-[11px]">{row.currency}</div>}
+                            <input type="text" value={row.currency} onChange={(e) => handleRecordChange(row.id, 'currency', e.target.value)} className={cls(row.currency)} />
                           </td>
                           <td className="px-2 py-2 border border-duracell-mediumGray min-w-[60px]">
-                            {isReview ? <input type="text" value={row.per} onChange={(e) => handleRecordChange(row.id, 'per', e.target.value)} className={inputClass} /> : <div className="text-center text-[11px]">{row.per}</div>}
+                            <input type="text" value={row.per} onChange={(e) => handleRecordChange(row.id, 'per', e.target.value)} className={cls(row.per)} />
                           </td>
                           <td className="px-2 py-2 border border-duracell-mediumGray min-w-[60px]">
-                            {isReview ? <input type="text" value={row.uom} onChange={(e) => handleRecordChange(row.id, 'uom', e.target.value)} className={inputClass} /> : <div className="text-center text-[11px]">{row.uom}</div>}
+                            <input type="text" value={row.uom} onChange={(e) => handleRecordChange(row.id, 'uom', e.target.value)} className={cls(row.uom)} placeholder="Pending" />
                           </td>
                           <td className="px-2 py-2 border border-duracell-mediumGray min-w-[120px]">
-                            {isReview ? <input type="text" value={row.buyerCode} onChange={(e) => handleRecordChange(row.id, 'buyerCode', e.target.value)} className={inputClass} /> : !row.buyerCode ? <span className="text-duracell-warning flex items-center justify-center text-[10px] font-bold"><AlertTriangle className="w-3 h-3 mr-1"/> Pending</span> : <div className="text-center text-[11px]">{row.buyerCode}</div>}
+                            <input type="text" value={row.buyerCode} onChange={(e) => handleRecordChange(row.id, 'buyerCode', e.target.value)} className={cls(row.buyerCode)} placeholder="Pending" />
                           </td>
                           <td className="px-2 py-2 border border-duracell-mediumGray min-w-[150px]">
-                            {isReview ? <input type="text" value={row.comments} onChange={(e) => handleRecordChange(row.id, 'comments', e.target.value)} className={inputClass} placeholder="Optional" /> : <div className="text-center text-[11px] text-duracell-mediumGray italic">{row.comments || '-'}</div>}
+                            <input type="text" value={row.comments} onChange={(e) => handleRecordChange(row.id, 'comments', e.target.value)} className={`${baseInput} border border-duracell-mediumGray`} placeholder="Optional" />
                           </td>
                         </tr>
                       );
@@ -564,8 +650,26 @@ const Dashboard: React.FC<DashboardProps> = ({ client, onLogout }) => {
 
           <div className="p-4 bg-duracell-lightGray border-t border-duracell-mediumGray flex justify-between items-center flex-shrink-0">
             <button onClick={handleReset} className="px-4 py-2 text-[12px] font-bold text-duracell-darkGray bg-duracell-white border border-duracell-darkGray rounded hover:bg-[#E0E0E0] transition-colors">Cancel / Reset</button>
-            <div className="flex space-x-3">
-              {appState === 'review' && <button onClick={handleSubmitRequest} className="flex items-center px-6 py-2 text-[12px] font-bold text-duracell-white bg-duracell-success rounded hover:bg-[#187718] transition-colors shadow-sm"><Check className="w-4 h-4 mr-2" /> Submit Request</button>}
+            <div className="flex items-center space-x-3">
+              {records.length > 0 && pendingCount > 0 && (
+                <span className="inline-flex items-center px-2.5 py-1 rounded text-[11px] font-bold bg-orange-50 text-duracell-warning border border-duracell-warning">
+                  {pendingCount} pending
+                </span>
+              )}
+              <button
+                onClick={handleSubmitRequest}
+                disabled={!canSubmit}
+                title={
+                  records.length === 0
+                    ? 'Add data first'
+                    : pendingCount > 0
+                      ? `${pendingCount} required cell${pendingCount === 1 ? '' : 's'} still empty`
+                      : 'Submit the request'
+                }
+                className="flex items-center px-6 py-2 text-[12px] font-bold text-duracell-white bg-duracell-success rounded hover:bg-[#187718] transition-colors shadow-sm disabled:bg-duracell-mediumGray disabled:cursor-not-allowed disabled:hover:bg-duracell-mediumGray"
+              >
+                <Check className="w-4 h-4 mr-2" /> Submit Request
+              </button>
             </div>
           </div>
           </div>

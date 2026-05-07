@@ -1,0 +1,4 @@
+{
+  "name": "Duracell AI Agent",
+  "description": "An intelligent assistant to extract pricing updates from supplier emails, map them to internal master data, and interactively resolve missing information using Duracell corporate branding."
+}

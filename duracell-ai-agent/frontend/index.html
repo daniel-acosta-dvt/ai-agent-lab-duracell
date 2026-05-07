@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Duracell AI Agent</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              duracell: {
+                copper: '#B87333',
+                black: '#000000',
+                white: '#FFFFFF',
+                darkGray: '#333333',
+                lightGray: '#F2F2F2',
+                mediumGray: '#BDBDBD',
+                success: '#228B22',
+                warning: '#FF9800',
+                error: '#F44336',
+                info: '#2196F3',
+                draft: '#DAA564'
+              }
+            },
+            fontFamily: {
+              sans: ['"Segoe UI"', 'system-ui', 'sans-serif'],
+            }
+          }
+        }
+      }
+    </script>
+        <style>
+      /* Custom Scrollbar for a cleaner look */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #F2F2F2; 
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #BDBDBD; 
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #B87333; 
+      }
+      @keyframes check-bounce {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.1); }
+      }
+      .animate-check {
+        animation: check-bounce 2s infinite ease-in-out;
+      }
+    </style>
+</head>
+<body class="bg-duracell-lightGray text-duracell-black font-sans antialiased">
+    <div id="root"></div>
+    <script type="module" src="./index.tsx"></script>
+<script type="module" src="/index.js"></script></body>
+</html>

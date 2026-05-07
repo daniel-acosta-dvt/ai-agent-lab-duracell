@@ -2,16 +2,17 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Client, ProcessedRecord, ChatMessage, MissingField } from '../types';
 import { MASTER_DATA, USER_HISTORY, LOGO_URL } from '../constants';
 import { extractPricingData, parseUserCorrection, parseRecordEdits } from '../services/geminiService';
-import { LogOut, FileText, Loader2, CheckCircle2, Send, Bot, Check, RefreshCw, Mail, XCircle } from 'lucide-react';
+import { LogOut, FileText, Loader2, CheckCircle2, Send, Bot, Check, RefreshCw, Mail, XCircle, FilePlus2 } from 'lucide-react';
 
 interface DashboardProps {
   client: Client;
   onLogout: () => void;
+  onNavigate: (view: 'submit' | 'report') => void;
 }
 
 type AppState = 'idle' | 'processing' | 'gathering_info' | 'review' | 'submitted';
 
-const Dashboard: React.FC<DashboardProps> = ({ client, onLogout }) => {
+const Dashboard: React.FC<DashboardProps> = ({ client, onLogout, onNavigate }) => {
   const [appState, setAppState] = useState<AppState>('idle');
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -457,7 +458,15 @@ const Dashboard: React.FC<DashboardProps> = ({ client, onLogout }) => {
               <RefreshCw className="w-5 h-5 mr-3" />
               Submit Another Request
             </button>
-            
+
+            <button
+              onClick={() => { handleReset(); onNavigate('report'); }}
+              className="w-full flex items-center justify-center py-3 px-6 bg-duracell-white text-duracell-black border border-duracell-darkGray rounded-lg font-bold text-sm hover:bg-duracell-lightGray transition-colors"
+            >
+              <FileText className="w-4 h-4 mr-2" />
+              View Report
+            </button>
+
             <button
               onClick={onLogout}
               className="w-full flex items-center justify-center py-3 px-6 text-duracell-error font-semibold hover:bg-red-50 rounded-lg transition-colors"
@@ -488,6 +497,20 @@ const Dashboard: React.FC<DashboardProps> = ({ client, onLogout }) => {
             <img src={LOGO_URL} alt="Duracell" className="h-10 object-contain mr-4" />
             <h1 className="text-lg font-bold text-duracell-white hidden sm:block tracking-wide">Duracell AI Agent</h1>
           </div>
+          <nav className="flex items-center space-x-2">
+            <button
+              onClick={() => onNavigate('submit')}
+              className="flex items-center px-3 py-1.5 text-[12px] font-bold text-duracell-white bg-duracell-copper rounded"
+            >
+              <FilePlus2 className="w-4 h-4 mr-2" /> New Request
+            </button>
+            <button
+              onClick={() => onNavigate('report')}
+              className="flex items-center px-3 py-1.5 text-[12px] font-semibold text-duracell-white hover:bg-duracell-darkGray rounded transition-colors"
+            >
+              <FileText className="w-4 h-4 mr-2" /> Report
+            </button>
+          </nav>
           <div className="flex items-center space-x-4">
             <div className="text-sm text-duracell-white text-right hidden md:block">
               <p className="font-semibold">{client.name}</p>

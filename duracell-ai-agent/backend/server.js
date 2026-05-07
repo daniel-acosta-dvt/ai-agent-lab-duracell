@@ -81,6 +81,30 @@ app.post('/api/submissions', async (req, res) => {
   }
 });
 
+app.get('/api/submissions', async (req, res) => {
+  try {
+    const snapshot = await firestore
+      .collection(SUBMISSIONS_COLLECTION)
+      .orderBy('submittedAt', 'desc')
+      .limit(200)
+      .get();
+    const submissions = snapshot.docs.map((d) => {
+      const data = d.data();
+      const ts = data.submittedAt;
+      return {
+        id: d.id,
+        submittedAt: ts && typeof ts.toDate === 'function' ? ts.toDate().toISOString() : null,
+        client: data.client || null,
+        records: Array.isArray(data.records) ? data.records : [],
+      };
+    });
+    res.json(submissions);
+  } catch (err) {
+    console.error('[Firestore] list failed:', err);
+    res.status(500).json({ error: err?.message || 'Firestore list failed' });
+  }
+});
+
 // Serve static files from the React app
 app.use(express.static(path.join(__dirname, '../frontend/dist')));
 

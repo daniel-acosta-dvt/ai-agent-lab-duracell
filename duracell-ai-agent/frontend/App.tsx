@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
+import Report from './components/Report';
 import { Client } from './types';
+
+export type AppView = 'submit' | 'report';
 
 const SESSION_COOKIE = 'duracell_session';
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
@@ -34,26 +37,25 @@ const clearSession = () => {
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<Client | null>(() => readSession());
+  const [view, setView] = useState<AppView>('submit');
 
   const handleLogin = (client: Client) => {
     writeSession(client);
     setCurrentUser(client);
+    setView('submit');
   };
 
   const handleLogout = () => {
     clearSession();
     setCurrentUser(null);
+    setView('submit');
   };
 
-  return (
-    <>
-      {!currentUser ? (
-        <Login onLogin={handleLogin} />
-      ) : (
-        <Dashboard client={currentUser} onLogout={handleLogout} />
-      )}
-    </>
-  );
+  if (!currentUser) return <Login onLogin={handleLogin} />;
+  if (view === 'report') {
+    return <Report client={currentUser} onLogout={handleLogout} onNavigate={setView} />;
+  }
+  return <Dashboard client={currentUser} onLogout={handleLogout} onNavigate={setView} />;
 };
 
 export default App;

@@ -22,13 +22,15 @@ steps:
       - 'managed'
       - '--allow-unauthenticated'
       - '--set-env-vars'
-      - 'GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$_LOCATION,PROXY_HEADER=vertex-app-shim'
+      - 'GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$_VERTEX_LOCATION,PROXY_HEADER=$_PROXY_HEADER'
 
 images:
   - '$_AR_HOSTNAME/$PROJECT_ID/$_AR_REPO_NAME/$_SERVICE_NAME:latest'
 
 substitutions:
   _LOCATION: europe-west1
+  _VERTEX_LOCATION: global
   _AR_HOSTNAME: europe-west1-docker.pkg.dev
   _AR_REPO_NAME: duracell-repo
   _SERVICE_NAME: duracell-ai-agent
+  _PROXY_HEADER: fTRGf93Zq6QyMA9pox6zzQZSrW72ppNZ
